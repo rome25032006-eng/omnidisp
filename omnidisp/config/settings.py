@@ -7,4 +7,11 @@ GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
 GROQ_TIMEOUT: int = int(os.environ.get("GROQ_TIMEOUT", "20"))
 
 # Настройки телеграм-бота
-TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+# Берём токен из любой из переменных окружения, какая есть.
+TELEGRAM_BOT_TOKEN: str = (
+    os.environ.get("TELEGRAM_BOT_TOKEN")
+    or os.environ.get("TELEGRAM_BOT_API_KEY", "")
+)
+
+# Для совместимости, если где-то в коде будет старое имя:
+TELEGRAM_BOT_API_KEY: str = TELEGRAM_BOT_TOKEN
