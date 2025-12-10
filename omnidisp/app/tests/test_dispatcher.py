@@ -10,7 +10,10 @@ def test_handle_message_basic(monkeypatch):
         fake_ask,
     )
 
-    result = handle_message("Здравствуйте, у меня сломалась стиралка", is_first_message=True)
+    result = handle_message(
+        "Здравствуйте, у меня сломалась стиралка",
+        is_first_message=True,
+    )
 
     assert "internal_trace" in result
     assert "client_answer" in result

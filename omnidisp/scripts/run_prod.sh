@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+# export GROQ_API_KEY="YOUR_GROQ_API_KEY_HERE"
+# export TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN_HERE"
