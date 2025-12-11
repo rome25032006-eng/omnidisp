@@ -90,10 +90,65 @@ def test_handle_message_price_question_no_digits(monkeypatch):
 
     result = handle_message(
         "Здравствуйте, сколько стоит ремонт стиральной машины?",
-        is_first_message=False,
+        is_first_message=True,
     )
 
     answer = result["client_answer"]
 
     assert not re.search(r"\d", answer)
     assert "стоимость" in answer.lower() or "цен" in answer.lower()
+
+
+def test_handle_message_second_price_with_min_price(monkeypatch):
+    def fake_min_price(category: str) -> int | None:  # noqa: ANN001
+        return 2500
+
+    def fail_ask(self, prompt: str) -> str:  # noqa: ANN001
+        raise AssertionError("LLM should not be called when price known")
+
+    monkeypatch.setattr(
+        "omnidisp.app.dispatcher.disp_logic.get_min_price",
+        fake_min_price,
+    )
+    monkeypatch.setattr(
+        "omnidisp.app.llm.llm_client.LLMClient.ask",
+        fail_ask,
+    )
+
+    result = handle_message(
+        "Сколько стоит ремонт стиральной машины?",
+        is_first_message=False,
+    )
+
+    answer = result["client_answer"]
+
+    assert "от 2500" in answer
+    assert re.search(r"\d", answer)
+    assert "диагност" in answer.lower() or "осмотр" in answer.lower()
+
+
+def test_handle_message_second_price_without_min_price(monkeypatch):
+    def fake_min_price(category: str) -> int | None:  # noqa: ANN001
+        return None
+
+    def fake_ask(self, prompt: str) -> str:  # noqa: ANN001
+        return "Обычно выходит 2000, но надо посмотреть на месте."
+
+    monkeypatch.setattr(
+        "omnidisp.app.dispatcher.disp_logic.get_min_price",
+        fake_min_price,
+    )
+    monkeypatch.setattr(
+        "omnidisp.app.llm.llm_client.LLMClient.ask",
+        fake_ask,
+    )
+
+    result = handle_message(
+        "Сколько стоит ремонт стиральной машины?",
+        is_first_message=False,
+    )
+
+    answer = result["client_answer"]
+
+    assert not re.search(r"\d", answer)
+    assert "осмотр" in answer.lower() or "диагност" in answer.lower()

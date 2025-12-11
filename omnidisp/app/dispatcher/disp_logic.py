@@ -2,7 +2,16 @@ from typing import Dict, List
 
 import re
 
+from omnidisp.app.knowledge.loader import (
+    FORBIDDEN_TASKS,
+    KEYWORD_TO_CATEGORY,
+    find_recommend_question,
+    get_min_price,
+    load_knowledge,
+)
 from omnidisp.app.llm.llm_client import LLMClient
+from omnidisp.app.llm.prompt_builder import build_disp_prompt
+from omnidisp.app.utils.text_normalizer import normalize_text
 
 PRICE_QUESTION_PATTERNS = [
     "сколько стоит",
@@ -11,15 +20,12 @@ PRICE_QUESTION_PATTERNS = [
     "стоимость",
 ]
 
-
-def _normalize(text: str) -> str:
-    return text.lower().replace("ё", "е")
+load_knowledge()
 
 
 def process(text: str, is_first_message: bool = False) -> Dict[str, str]:
-    """
-    Базовая точка обработки входящего сообщения в режиме DISP.
-    """
+    """Базовая точка обработки входящего сообщения в режиме DISP."""
+
     tasks = split_to_tasks(text)
     stop_result = check_stop_factors(tasks)
     categories = detect_categories(text, tasks)
@@ -50,36 +56,37 @@ def process(text: str, is_first_message: bool = False) -> Dict[str, str]:
 
 
 def split_to_tasks(text: str) -> List[str]:
-    """
-    Разбивает исходное сообщение на подзадачи.
-    """
+    """Разбивает исходное сообщение на подзадачи."""
+
     parts = re.split(r";|\.|\sи\s|,", text)
     tasks = [part.strip() for part in parts if part and part.strip()]
     return tasks if tasks else [text]
 
 
 def check_stop_factors(tasks: List[str]) -> Dict[str, object]:
-    """
-    Проверяет задачи на наличие стоп-факторов.
-    """
-    stop_phrases = [
-        "люстра",
-        "люстру",
-        "люстры",
-        "потолочный светильник",
-        "газовая плита",
-        "газовая колонка",
-        "газовый котел",
-        "газ",
-        "газовое",
-        "сварка",
-        "сварочные работы",
-        "стояк",
-        "стояки",
-        "разводка труб",
-        "заменить трубы",
-        "проложить трубы",
-    ]
+    """Проверяет задачи на наличие стоп-факторов."""
+
+    stop_phrases = (
+        FORBIDDEN_TASKS
+        or [
+            "люстра",
+            "люстру",
+            "люстры",
+            "потолочный светильник",
+            "газовая плита",
+            "газовая колонка",
+            "газовый котел",
+            "газ",
+            "газовое",
+            "сварка",
+            "сварочные работы",
+            "стояк",
+            "стояки",
+            "разводка труб",
+            "заменить трубы",
+            "проложить трубы",
+        ]
+    )
 
     forbidden_tasks: List[str] = []
     allowed_tasks: List[str] = []
@@ -95,7 +102,7 @@ def check_stop_factors(tasks: List[str]) -> Dict[str, object]:
     }
 
     for task in tasks:
-        normalized_task = _normalize(task)
+        normalized_task = normalize_text(task)
         if any(stop_phrase in normalized_task for stop_phrase in stop_phrases):
             forbidden_tasks.append(task)
         elif normalized_task in greeting_tasks:
@@ -115,7 +122,7 @@ def check_stop_factors(tasks: List[str]) -> Dict[str, object]:
 
 
 def detect_categories(text: str, tasks: List[str]) -> Dict[str, object]:
-    keyword_to_category = {
+    fallback_keywords = {
         "холодильник": "fridge",
         "морозилка": "fridge",
         "стиралка": "washing_machine",
@@ -134,33 +141,42 @@ def detect_categories(text: str, tasks: List[str]) -> Dict[str, object]:
         "системный блок": "pc",
     }
 
-    normalized_text = _normalize(text)
-
-    main_category = "unknown"
-    for keyword, category in keyword_to_category.items():
-        if keyword in normalized_text:
-            main_category = category
-            break
-
-    task_categories: List[str] = []
-    for task in tasks:
-        normalized_task = _normalize(task)
-        task_category = "unknown"
-        for keyword, category in keyword_to_category.items():
-            if keyword in normalized_task:
-                task_category = category
-                if main_category == "unknown":
-                    main_category = category
+    def _detect(mapping: Dict[str, str]) -> Dict[str, object]:
+        normalized_text = normalize_text(text)
+        detected_main = "unknown"
+        for keyword, category in mapping.items():
+            if keyword in normalized_text:
+                detected_main = category
                 break
-        task_categories.append(task_category)
 
-    if not any(cat != "unknown" for cat in task_categories) and main_category == "unknown":
-        task_categories = ["unknown" for _ in tasks]
+        detected_tasks: List[str] = []
+        for task in tasks:
+            normalized_task = normalize_text(task)
+            task_category = "unknown"
+            for keyword, category in mapping.items():
+                if keyword in normalized_task:
+                    task_category = category
+                    if detected_main == "unknown":
+                        detected_main = category
+                    break
+            detected_tasks.append(task_category)
+        return {"main_category": detected_main, "task_categories": detected_tasks}
 
-    return {
-        "main_category": main_category,
-        "task_categories": task_categories,
-    }
+    knowledge_detection = _detect(KEYWORD_TO_CATEGORY) if KEYWORD_TO_CATEGORY else None
+    has_knowledge_match = knowledge_detection and (
+        knowledge_detection["main_category"] != "unknown"
+        or any(cat != "unknown" for cat in knowledge_detection["task_categories"])
+    )
+
+    if has_knowledge_match:
+        result = knowledge_detection  # type: ignore[assignment]
+    else:
+        result = _detect(fallback_keywords)
+
+    if not any(cat != "unknown" for cat in result["task_categories"]):
+        result["task_categories"] = ["unknown" for _ in tasks]
+
+    return result
 
 
 def detect_dialog_step(
@@ -168,10 +184,9 @@ def detect_dialog_step(
     is_first_message: bool,
     categories: Dict[str, object],
 ) -> str:
-    """
-    Определение шага диалога на основе текста и признака первого сообщения.
-    """
-    lowered_text = _normalize(text)
+    """Определение шага диалога на основе текста и признака первого сообщения."""
+
+    lowered_text = normalize_text(text)
     if any(pattern in lowered_text for pattern in PRICE_QUESTION_PATTERNS):
         return "price_question"
     greeting_patterns = ["здрав", "привет", "добрый", "доброе"]
@@ -194,9 +209,8 @@ def build_trace(
     stop_result: Dict[str, object],
     categories: Dict[str, object],
 ) -> str:
-    """
-    Формирует строку INTERNAL TRACE для внутренней отладки режима DISP.
-    """
+    """Формирует строку INTERNAL TRACE для внутренней отладки режима DISP."""
+
     forbidden_tasks = stop_result.get("forbidden_tasks", [])
     allowed_tasks = stop_result.get("allowed_tasks", [])
 
@@ -213,6 +227,7 @@ def build_trace(
         decision_text = "принимаем"
 
     price_question = step == "price_question"
+    knowledge_active = bool(KEYWORD_TO_CATEGORY)
 
     plan_line = "План CLIENT ANSWER: "
     if stop_result.get("full_refuse"):
@@ -224,6 +239,8 @@ def build_trace(
 
     parts = [
         "INTERNAL TRACE:",
+        f"Получен текст: {text}",
+        f"Определены задачи: {len(tasks)}",
         "Задача: базовая обработка входящего сообщения.",
         "Контекст:",
         "Тип: фраза.",
@@ -231,6 +248,7 @@ def build_trace(
         f"Шаг: {step}.",
         "Документы:",
         f"Категория: {categories.get('main_category', 'unknown')}.",
+        f"JSON-ключевые слова активны: {'да' if knowledge_active else 'нет'}.",
         "Файл: не используется на этом этапе.",
         "Прайс просмотрен: нет.",
         "Стоп-факторы:",
@@ -253,72 +271,12 @@ def build_trace(
         "Стоп-факторы / категория / прайс / шаг / вопрос о цене / формат ответа — проверены на текущем этапе.",
     ]
 
-    if tasks:
-        parts.insert(1, f"Получен текст: {text}")
-        parts.insert(2, f"Определены задачи: {len(tasks)}")
     if forbidden_tasks:
         parts.append(f"Запрещённые задачи: {forbidden_tasks}")
     if allowed_tasks:
         parts.append(f"Разрешённые задачи детально: {allowed_tasks}")
 
     return "\n".join(parts)
-
-
-def _build_disp_prompt(
-    user_text: str,
-    step: str,
-    stop_result: Dict[str, object],
-    categories: Dict[str, object],
-    is_first_message: bool,
-) -> str:
-    if stop_result.get("full_refuse"):
-        plan_type = "full_refuse"
-    elif stop_result.get("partial_refuse"):
-        plan_type = "partial_refuse"
-    else:
-        plan_type = "allowed"
-
-    price_question = step == "price_question"
-
-    plan_lines = [
-        "PLAN:",
-        f"- user_text: {user_text}",
-        f"- step: {step}",
-        f"- type: {plan_type}",
-        f"- is_first_message: {'yes' if is_first_message else 'no'}",
-        f"- forbidden_tasks: {stop_result.get('forbidden_tasks', [])}",
-        f"- allowed_tasks: {stop_result.get('allowed_tasks', [])}",
-        f"- main_category: {categories.get('main_category', 'unknown')}",
-        f"- price_question: {'yes' if price_question else 'no'}",
-    ]
-
-    instructions = [
-        "Ты — частный выездной мастер по ремонту бытовой техники и мелких работ, стаж более 40 лет.",
-        "Тон спокойный, уверенный и профессиональный, без панибратства, шуток и смайликов.",
-        "Отвечай на русском от первого лица, 1–3 коротких предложения, делово и просто.",
-        "Не используй слова: 'специализация', 'стоп-фактор', 'план', 'категория', 'задачи', 'регламент', 'правила', 'база знаний', 'прайс'.",
-        "Не упоминай ИИ, нейросети, ботов, модели, файлы или внутренние правила.",
-        "Не используй английские слова и латиницу.",
-        "Не давай инструкций по самостоятельному ремонту.",
-        "Мастер выездной: не проси привозить технику, предлагается выезд к клиенту.",
-        "PLAN.type == 'full_refuse': вежливо и кратко откажись от всех работ, сообщи, что такими работами не занимаюсь/не берусь.",
-        "PLAN.type == 'partial_refuse': коротко откажи по запрещённым задачам, затем предложи помочь по разрешённым и задай один уточняющий вопрос по разрешённой части.",
-        "PLAN.type == 'allowed': веди себя как опытный мастер, уточняй проблему или условия работы, при необходимости предложи выезд.",
-        "Если is_first_message == True: начинай ответ с короткого приветствия 'Здравствуйте.' или 'Добрый день.'.",
-        "Если price_question == True: не называй суммы и не используй цифры, поясни, что цену скажешь после осмотра на месте, можно предложить выезд.",
-    ]
-
-    prompt = "\n".join(
-        [
-            "Ты — мастер по ремонту бытовой техники и мелких работ.",
-            "Структурированный план ответа:",
-            *plan_lines,
-            "Инструкции:",
-            *instructions,
-            "Сформулируй один естественный, короткий ответ мастера с большим опытом, строго следуя PLAN и этим инструкциям.",
-        ]
-    )
-    return prompt
 
 
 def build_client_answer(
@@ -328,23 +286,50 @@ def build_client_answer(
     text: str,
     is_first_message: bool,
 ) -> str:
-    """
-    Формирует ответ мастера для клиента.
-    """
-    prompt = _build_disp_prompt(
-        user_text=text,
-        step=step,
-        stop_result=stop_result,
-        categories=categories,
-        is_first_message=is_first_message,
+    """Формирует ответ мастера для клиента."""
+
+    if stop_result.get("full_refuse"):
+        plan_type = "full_refuse"
+    elif stop_result.get("partial_refuse"):
+        plan_type = "partial_refuse"
+    else:
+        plan_type = "allowed"
+
+    price_question = step == "price_question"
+    main_category = categories.get("main_category", "unknown")
+    recommend_question = find_recommend_question(
+        main_category, stop_result.get("allowed_tasks", [])
     )
-    client = LLMClient()
-    core_answer = client.ask(prompt)
 
     fallback_message = (
         "Сейчас не получается ответить подробно, попробуйте, пожалуйста, написать ещё раз "
         "или переформулировать запрос."
     )
+
+    min_price = None
+    if price_question and not is_first_message:
+        min_price = get_min_price(main_category)
+        if min_price is not None:
+            return (
+                f"По опыту, такие работы обычно стоят от {min_price} рублей. "
+                "Точную стоимость смогу сказать после диагностики на месте. "
+                "Когда вам удобно, чтобы мастер подъехал?"
+            )
+
+    prompt = build_disp_prompt(
+        user_text=text,
+        step=step,
+        plan_type=plan_type,
+        forbidden_tasks=stop_result.get("forbidden_tasks", []),
+        allowed_tasks=stop_result.get("allowed_tasks", []),
+        main_category=main_category,
+        is_price_question=price_question,
+        is_first_message=is_first_message,
+        recommend_question=recommend_question,
+    )
+    client = LLMClient()
+    core_answer = client.ask(prompt)
+
     if not core_answer:
         return fallback_message
 
@@ -357,19 +342,13 @@ def build_client_answer(
 
     answer = core_answer
 
-    if step == "price_question" and re.search(r"\d", answer or ""):
-        answer = (
-            "Точную стоимость смогу сказать только после осмотра на месте. Я приеду, "
-            "посмотрю проблему и уже по факту скажу, что и по какой цене делать."
-        )
-
     if is_first_message and not answer.lower().startswith("здрав"):
         answer = f"Здравствуйте. {answer}" if answer else fallback_message
 
-    if step == "price_question" and re.search(r"\d", answer or ""):
+    if price_question and (min_price is None) and re.search(r"\d", answer or ""):
         answer = (
-            "Точную стоимость смогу сказать только после осмотра на месте. Я приеду, "
-            "посмотрю проблему и уже по факту скажу, что и по какой цене делать."
+            "Точную стоимость смогу сказать только после диагностики на месте. "
+            "Могу подъехать и после осмотра назвать сумму. Когда вам удобно?"
         )
 
     return answer or fallback_message
