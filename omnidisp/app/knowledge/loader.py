@@ -23,17 +23,15 @@ class JobInfo(TypedDict, total=False):
 
     - ``id``: internal code of the job.
     - ``title``: human-readable title for the master.
-    - ``price_work_min`` / ``price_work_max``: labour price range.
-    - ``price_parts_min`` / ``price_parts_max``: spare parts price range.
+    - ``price_work_from``: minimal labour price.
+    - ``price_parts_from``: minimal spare parts price.
     - ``notes``: free-form comments.
     """
 
     id: str
     title: str
-    price_work_min: int
-    price_work_max: int
-    price_parts_min: int
-    price_parts_max: int
+    price_work_from: int
+    price_parts_from: int
     notes: str
 
 
@@ -170,7 +168,10 @@ def get_min_price(category_code: str) -> Optional[int]:
     jobs = category.get("jobs") or []
     prices: List[int] = []
     for job in jobs:
-        price_value = job.get("price_work_min")
+        if "price_work_from" not in job:
+            continue
+
+        price_value = job.get("price_work_from")
         if isinstance(price_value, (int, float)):
             prices.append(int(price_value))
         elif isinstance(price_value, str) and price_value.strip().isdigit():

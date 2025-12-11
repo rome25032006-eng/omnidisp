@@ -15,7 +15,7 @@ def test_load_knowledge_with_keywords_and_prices(tmp_path):
             {
                 "id": "diagnostic",
                 "title": "Диагностика",
-                "price_work_min": 1800,
+                "price_work_from": 1800,
             }
         ],
         "clarifying_questions": ["Когда техника перестала холодить?"],
